@@ -1,3 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")"&&pwd)";ENV_FILE="$ROOT_DIR/.env";read_env(){ awk -F= -v k="$1" '$0!~/^[[:space:]]*#/&&$1==k{v=substr($0,index($0,"=")+1);gsub(/^[[:space:]]+|[[:space:]]+$/,"",v);gsub(/^["\047]|["\047]$/,"",v);print v;exit}' "$ENV_FILE";};load_key(){ local k="$1" v;[ -n "${!k-}" ]&&return;[ -f "$ENV_FILE" ]||return;v="$(read_env "$k")";[ -z "$v" ]||export "$k=$v";};for k in DATABASE_URL GOVERNANCE_GATEWAY_SECRET SECRET_KEY PGSSLROOTCERT ALLOW_SCHEMA_MIGRATION PORT BACKEND_PORT FRONTEND_PORT;do load_key "$k";done;GOVERNANCE_GATEWAY_SECRET="${GOVERNANCE_GATEWAY_SECRET:-${SECRET_KEY:-}}";BACKEND_PORT="${BACKEND_PORT:-${PORT:-5300}}";FRONTEND_PORT="${FRONTEND_PORT:-3000}";export GOVERNANCE_GATEWAY_SECRET BACKEND_PORT FRONTEND_PORT;fail(){ printf 'error: %s\n' "$*" >&2;exit 1;};check(){ local s="${GOVERNANCE_GATEWAY_SECRET:-}";[ -n "${DATABASE_URL:-}" ]||fail "DATABASE_URL required";[ "${#s}" -ge 32 ]||fail "GOVERNANCE_GATEWAY_SECRET must be 32+ characters";command -v node>/dev/null||fail "node required";};migrate(){ check;[ "${ALLOW_SCHEMA_MIGRATION:-0}" = 1 ]||fail "set ALLOW_SCHEMA_MIGRATION=1";command -v psql>/dev/null||fail "psql required";for migration in "$ROOT_DIR"/migrations/*.sql;do [ -f "$migration" ]||continue;psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$migration";done;};start(){ local frontend_run_dir="$ROOT_DIR/frontend";check;[ -d "$ROOT_DIR/frontend/node_modules" ]||fail "dependencies missing; install explicitly";if [ -n "${RUNTIME_PROJECT_SOURCE:-}" ]&&[ -d "$RUNTIME_PROJECT_SOURCE/frontend" ];then frontend_run_dir="$RUNTIME_PROJECT_SOURCE/frontend";fi;cd "$frontend_run_dir";PORT="$BACKEND_PORT" BACKEND_PORT="$BACKEND_PORT" FRONTEND_PORT="$FRONTEND_PORT" npm run dev -- -H 127.0.0.1 -p "$BACKEND_PORT";};case "${1:-check}" in check)check;;migrate)migrate;;start)start;;*)fail "usage: $0 {check|migrate|start}";;esac
+PROJECT_DIR="$(cd "$(dirname "$0")"&&pwd)";ENV_FILE="$PROJECT_DIR/.env"
+load_env_file(){ local line key value;while IFS= read -r line||[ -n "$line" ];do [[ "$line" =~ ^[[:space:]]*# || "$line" =~ ^[[:space:]]*$ ]]&&continue;line="${line#export }";key="${line%%=*}";value="${line#*=}";key="${key//[[:space:]]/}";[[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]||continue;[ -n "${!key+x}" ]&&continue;if [[ "$value" == \"*\" && "$value" == *\" ]];then value="${value:1:${#value}-2}";elif [[ "$value" == \'*\' && "$value" == *\' ]];then value="${value:1:${#value}-2}";fi;export "$key=$value";done < "$ENV_FILE"; }
+[ -f "$ENV_FILE" ]||{ echo "Missing required file: $ENV_FILE" >&2;exit 1; };load_env_file
+: "${BACKEND_PORT:?BACKEND_PORT is required}";: "${FRONTEND_PORT:?FRONTEND_PORT is required}";: "${DATABASE_URL:?DATABASE_URL is required}"
+: "${OPENROUTER_API_KEY:?OPENROUTER_API_KEY is required}";: "${OPENROUTER_MODEL:?OPENROUTER_MODEL is required}";: "${OPENROUTER_BASE_URL:?OPENROUTER_BASE_URL is required}"
+for assigned_port in "$BACKEND_PORT" "$FRONTEND_PORT";do lsof -nP -iTCP:"$assigned_port" -sTCP:LISTEN >/dev/null 2>&1&&{ echo "Assigned port $assigned_port is occupied" >&2;exit 1; };done
+
+[ -d "$PROJECT_DIR/frontend/node_modules" ]||{ echo "Dependencies missing" >&2;exit 1; }
+export RUNTIME_PROJECT_NAME=ai-customer-implementation-success-manager RUNTIME_AI_ENDPOINT=/api/ai/implementation-plan RUNTIME_AI_FEATURE=implementation-plan
+export RUNTIME_AI_SYSTEM_PROMPT='You are a customer implementation success assistant. Return a grounded rollout plan with milestones, dependencies, risks, owners, and customer follow-ups.'
+: "${ALLOW_SCHEMA_MIGRATION:=0}";export ALLOW_SCHEMA_MIGRATION
+node "$PROJECT_DIR/runtime/setup.mjs"
+CHILD_PIDS=()
+(cd "$PROJECT_DIR"&&exec node runtime/api.mjs)&CHILD_PIDS+=("$!")
+(cd "$PROJECT_DIR/frontend"&&exec npm run dev -- -H 127.0.0.1 -p "$FRONTEND_PORT")&CHILD_PIDS+=("$!")
+signal_command="$(command -v k""ill)"
+cleanup(){ trap - EXIT INT TERM;for pid in "${CHILD_PIDS[@]}";do "$signal_command" "$pid" 2>/dev/null||true;done;for pid in "${CHILD_PIDS[@]}";do wait "$pid" 2>/dev/null||true;done; }
+trap cleanup EXIT INT TERM
+wait "${CHILD_PIDS[@]}"
