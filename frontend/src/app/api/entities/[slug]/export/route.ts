@@ -1,0 +1,5 @@
+import { NextRequest, NextResponse } from "next/server";
+import { requireSession } from "@/lib/requestAuth";
+import { getEntitySet } from "@/lib/entityStore";
+import { filterRows, toCSV } from "@/lib/featurepack";
+export async function GET(request: NextRequest, { params }: { params: { slug: string } }) { const s = await requireSession(request); if (s instanceof NextResponse) return s; const set = await getEntitySet(params.slug); if (!set) return NextResponse.json({ error: "Not found" }, { status: 404 }); const rows = filterRows(set.rows as unknown as Record<string, unknown>[], request.nextUrl.searchParams.get("q") || "", request.nextUrl.searchParams.get("status") || ""); const format = request.nextUrl.searchParams.get("format") || "json"; if (format === "csv") return new Response(toCSV(rows), { headers: { "Content-Type": "text/csv", "Content-Disposition": `attachment; filename="${params.slug}.csv"` } }); return new Response(JSON.stringify(rows, null, 2), { headers: { "Content-Type": "application/json", "Content-Disposition": `attachment; filename="${params.slug}.json"` } }); }

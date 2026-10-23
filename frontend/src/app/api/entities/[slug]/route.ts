@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getEntitySet, resetEntitySet, saveEntitySet } from '@/lib/entityStore';
+import { filterRows } from '@/lib/featurepack';
 import { requireDocumentManager, requireSession } from '@/lib/requestAuth';
 
 export async function GET(request: NextRequest, { params }: { params: { slug: string } }) {
@@ -9,6 +10,7 @@ export async function GET(request: NextRequest, { params }: { params: { slug: st
   if (!set) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 });
   }
+  const q = request.nextUrl.searchParams.get('q') || ''; const status = request.nextUrl.searchParams.get('status') || ''; if (q || status) return NextResponse.json({ ...set, rows: filterRows(set.rows as unknown as Record<string, unknown>[], q, status) });
   return NextResponse.json(set);
 }
 
